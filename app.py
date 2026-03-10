@@ -1,0 +1,135 @@
+import os
+import asyncio
+import numpy as np
+import torch
+from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
+from lightrag import LightRAG, QueryParam
+from lightrag.utils import EmbeddingFunc, setup_logger
+from openai import AzureOpenAI
+
+setup_logger("lightrag", level="INFO")
+
+load_dotenv()
+
+WORKING_DIR = os.getenv("RAG_STORAGE_DIR", "./rag_storage")
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
+
+AZURE_API_KEY         = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_ENDPOINT        = os.getenv("AZURE_OPENAI_API_ENDPOINT")
+AZURE_API_VERSION     = os.getenv("AZURE_OPENAI_VERSION")
+AZURE_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_MODEL")
+
+
+client = AzureOpenAI(
+    api_key=AZURE_API_KEY,
+    azure_endpoint=AZURE_ENDPOINT,
+    api_version=AZURE_API_VERSION,
+)
+
+
+_device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"[Embed] Loading BAAI/bge-m3 on {_device} ...")
+
+_model_kwargs = {"torch_dtype": torch.float16} if _device == "cuda" else {}
+
+embed_model = SentenceTransformer(
+    "BAAI/bge-m3",
+    device=_device,
+    model_kwargs=_model_kwargs,
+)
+
+EMBED_DIM  = 1024
+MAX_TOKENS = 8192
+
+# How many texts to encode in one call.
+# Keep low (1-4) on CPU to stay well inside the 60s worker timeout.
+# Raise to 12-32 if you have a GPU.
+_BATCH_SIZE = 2 if _device == "cpu" else 12
+
+
+async def huggingface_embed(texts: list[str]) -> np.ndarray:
+    loop = asyncio.get_event_loop()
+    embeddings = await loop.run_in_executor(
+        None,
+        lambda: embed_model.encode(
+            texts,
+            batch_size=_BATCH_SIZE,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ),
+    )
+    return np.array(embeddings, dtype=np.float32)
+
+
+embedding_func = EmbeddingFunc(
+    embedding_dim=EMBED_DIM,
+    max_token_size=MAX_TOKENS,
+    func=huggingface_embed,
+)
+
+
+async def azure_llm_func(
+    prompt: str,
+    system_prompt: str | None = None,
+    history_messages: list | None = None,
+    **kwargs,
+) -> str:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    if history_messages:
+        messages.extend(history_messages)
+    messages.append({"role": "user", "content": prompt})
+
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: client.chat.completions.create(
+            model=AZURE_CHAT_DEPLOYMENT,
+            messages=messages,
+            **{k: v for k, v in kwargs.items() if k in ("temperature", "max_tokens")},
+        ),
+    )
+    return response.choices[0].message.content
+
+
+async def initialize_rag() -> LightRAG:
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        embedding_func=embedding_func,
+        llm_model_func=azure_llm_func,
+        embedding_func_max_async=1,
+    )
+    await rag.initialize_storages()
+    return rag
+
+
+async def insert_documents(rag: LightRAG, files: list[str]) -> None:
+    for file_path in files:
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            await rag.ainsert(text)
+            print(f"✓ Inserted '{file_path}' into RAG / knowledge graph.")
+        else:
+            print(f"✗ File not found: {file_path}")
+
+
+async def main() -> None:
+    rag = None
+    try:
+        rag = await initialize_rag()
+        await insert_documents(rag, ["sample.md"])
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise
+    finally:
+        if rag:
+            await rag.finalize_storages()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
