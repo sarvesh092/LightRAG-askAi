@@ -116,12 +116,56 @@ async def insert_documents(rag: LightRAG, files: list[str]) -> None:
         else:
             print(f"✗ File not found: {file_path}")
 
+# chat
+async def chat_loop(rag: LightRAG) -> None:
+    mode = "hybrid"
+    print("\n" + "═" * 60)
+    print("  Document Q&A ready  —  ask anything about your docs")
+    print(f"  Current query mode : {mode}")
+    print("  Commands : mode <hybrid|local|global|naive> | quit")
+    print("═" * 60 + "\n")
+
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting chat.")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ("quit", "exit"):
+            print("Goodbye!")
+            break
+
+        if user_input.lower().startswith("mode "):
+            new_mode = user_input.split(maxsplit=1)[1].strip().lower()
+            if new_mode in ("hybrid", "local", "global", "naive"):
+                mode = new_mode
+                print(f"  ✓ Query mode switched to: {mode}\n")
+            else:
+                print("  ✗ Unknown mode. Choose: hybrid | local | global | naive\n")
+            continue
+
+        try:
+            print("AI: ", end="", flush=True)
+            answer = await rag.aquery(
+                user_input,
+                param=QueryParam(mode=mode),
+            )
+            print(answer)
+            print()
+        except Exception as e:
+            print(f"[Error during query: {e}]\n")
+
 
 async def main() -> None:
     rag = None
     try:
         rag = await initialize_rag()
         await insert_documents(rag, ["sample.md"])
+        await chat_loop(rag)
 
     except Exception as e:
         print(f"An error occurred: {e}")
