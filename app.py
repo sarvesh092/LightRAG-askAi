@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc, setup_logger
-from openai import AzureOpenAI
+from openai import OpenAI
 
 setup_logger("lightrag", level="INFO")
 
@@ -16,16 +16,12 @@ WORKING_DIR = os.getenv("RAG_STORAGE_DIR", "./rag_storage")
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
-AZURE_API_KEY         = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_ENDPOINT        = os.getenv("AZURE_OPENAI_API_ENDPOINT")
-AZURE_API_VERSION     = os.getenv("AZURE_OPENAI_VERSION")
-AZURE_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_MODEL")
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
+OPENAI_CHAT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 
-client = AzureOpenAI(
-    api_key=AZURE_API_KEY,
-    azure_endpoint=AZURE_ENDPOINT,
-    api_version=AZURE_API_VERSION,
+client = OpenAI(
+    api_key=OPENAI_API_KEY,
 )
 
 
@@ -43,9 +39,6 @@ embed_model = SentenceTransformer(
 EMBED_DIM  = 1024
 MAX_TOKENS = 8192
 
-# How many texts to encode in one call.
-# Keep low (1-4) on CPU to stay well inside the 60s worker timeout.
-# Raise to 12-32 if you have a GPU.
 _BATCH_SIZE = 2 if _device == "cpu" else 12
 
 
@@ -70,7 +63,7 @@ embedding_func = EmbeddingFunc(
 )
 
 
-async def azure_llm_func(
+async def openai_llm_func(
     prompt: str,
     system_prompt: str | None = None,
     history_messages: list | None = None,
@@ -87,7 +80,7 @@ async def azure_llm_func(
     response = await loop.run_in_executor(
         None,
         lambda: client.chat.completions.create(
-            model=AZURE_CHAT_DEPLOYMENT,
+            model=OPENAI_CHAT_MODEL,
             messages=messages,
             **{k: v for k, v in kwargs.items() if k in ("temperature", "max_tokens")},
         ),
@@ -99,7 +92,7 @@ async def initialize_rag() -> LightRAG:
     rag = LightRAG(
         working_dir=WORKING_DIR,
         embedding_func=embedding_func,
-        llm_model_func=azure_llm_func,
+        llm_model_func=openai_llm_func,
         embedding_func_max_async=1,
     )
     await rag.initialize_storages()
@@ -116,7 +109,6 @@ async def insert_documents(rag: LightRAG, files: list[str]) -> None:
         else:
             print(f"✗ File not found: {file_path}")
 
-# chat
 async def chat_loop(rag: LightRAG) -> None:
     mode = "hybrid"
     print("\n" + "═" * 60)
