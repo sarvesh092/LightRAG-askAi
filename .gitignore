@@ -16,6 +16,8 @@ ENV/
 env.bak/
 venv.bak/
 rag_env/
+graph.html
+*.log
 
 
 !env.example
