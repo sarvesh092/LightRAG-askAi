@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 import torch
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc, setup_logger
 from openai import OpenAI
@@ -19,26 +19,20 @@ if not os.path.exists(WORKING_DIR):
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
-
-client = OpenAI(
-    api_key=OPENAI_API_KEY,
-)
-
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 _device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"[Embed] Loading BAAI/bge-m3 on {_device} ...")
-
-_model_kwargs = {"torch_dtype": torch.float16} if _device == "cuda" else {}
+print(f"[Device] Using: {_device.upper()}")
 
 embed_model = SentenceTransformer(
     "BAAI/bge-m3",
     device=_device,
-    model_kwargs=_model_kwargs,
+    model_kwargs={"torch_dtype": torch.float16} if _device == "cuda" else {},
 )
+print("[Embed] bge-m3 loaded.")
 
-EMBED_DIM  = 1024
-MAX_TOKENS = 8192
-
+EMBED_DIM   = 1024
+MAX_TOKENS  = 8192
 _BATCH_SIZE = 2 if _device == "cpu" else 12
 
 
@@ -61,6 +55,31 @@ embedding_func = EmbeddingFunc(
     max_token_size=MAX_TOKENS,
     func=huggingface_embed,
 )
+
+# bge-reranker-v2-m3
+reranker = CrossEncoder(
+    "BAAI/bge-reranker-v2-m3",
+    device=_device,
+    automodel_args={
+        "torch_dtype": torch.float16 if _device == "cuda" else torch.float32
+    },
+)
+print("[Rerank] bge-reranker-v2-m3 loaded.")
+
+
+async def rerank_func(query: str, documents: list[str], top_n: int) -> list[dict]:
+    loop = asyncio.get_event_loop()
+    pairs  = [(query, doc) for doc in documents]
+    scores = await loop.run_in_executor(
+        None,
+        lambda: reranker.predict(pairs, show_progress_bar=False),
+    )
+    ranked = sorted(
+        [{"index": i, "relevance_score": float(s)} for i, s in enumerate(scores)],
+        key=lambda x: x["relevance_score"],
+        reverse=True,
+    )
+    return ranked[:top_n]
 
 
 async def openai_llm_func(
@@ -94,6 +113,7 @@ async def initialize_rag() -> LightRAG:
         embedding_func=embedding_func,
         llm_model_func=openai_llm_func,
         embedding_func_max_async=1,
+        rerank_model_func=rerank_func,
     )
     await rag.initialize_storages()
     return rag
@@ -109,12 +129,14 @@ async def insert_documents(rag: LightRAG, files: list[str]) -> None:
         else:
             print(f"✗ File not found: {file_path}")
 
+
+# Chat
 async def chat_loop(rag: LightRAG) -> None:
-    mode = "hybrid"
+    mode = "mix"
     print("\n" + "═" * 60)
     print("  Document Q&A ready  —  ask anything about your docs")
-    print(f"  Current query mode : {mode}")
-    print("  Commands : mode <hybrid|local|global|naive> | quit")
+    print(f"  Current query mode : {mode}  (reranker active)")
+    print("  Commands : mode <mix|hybrid|local|global|naive> | quit")
     print("═" * 60 + "\n")
 
     while True:
@@ -133,18 +155,18 @@ async def chat_loop(rag: LightRAG) -> None:
 
         if user_input.lower().startswith("mode "):
             new_mode = user_input.split(maxsplit=1)[1].strip().lower()
-            if new_mode in ("hybrid", "local", "global", "naive"):
+            if new_mode in ("mix", "hybrid", "local", "global", "naive"):
                 mode = new_mode
                 print(f"  ✓ Query mode switched to: {mode}\n")
             else:
-                print("  ✗ Unknown mode. Choose: hybrid | local | global | naive\n")
+                print("  ✗ Unknown mode. Choose: mix | hybrid | local | global | naive\n")
             continue
 
         try:
             print("AI: ", end="", flush=True)
             answer = await rag.aquery(
                 user_input,
-                param=QueryParam(mode=mode),
+                param=QueryParam(mode=mode, enable_rerank=True),
             )
             print(answer)
             print()
@@ -158,7 +180,6 @@ async def main() -> None:
         rag = await initialize_rag()
         await insert_documents(rag, ["sample.md"])
         await chat_loop(rag)
-
     except Exception as e:
         print(f"An error occurred: {e}")
         raise
