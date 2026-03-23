@@ -1,6 +1,6 @@
 # LightRAG Ask AI
 
-A local Retrieval-Augmented Generation (RAG) conversational agent built on top of [LightRAG](https://github.com/HKUDS/LightRAG). This project allows you to seamlessly chat with and extract insights from your documents using state-of-the-art embedding, reranking, and Large Language Models (LLMs).
+A local Retrieval-Augmented Generation (RAG) conversational agent built on top of [LightRAG](https://github.com/HKUDS/LightRAG). This project allows you to seamlessly chat with and extract insights from your documents using embedding, reranking, Large Language Models and Knowledge Graph.
 
 ## 🚀 What This Project Is
 This application ingests text documents (like the provided `sample.md` story) into a knowledge graph and vector database. It then provides an interactive command-line interface to ask questions about the documents. 
@@ -65,6 +65,16 @@ By utilizing hybrid search modes, semantic embeddings, and an advanced reranker,
    python app.py
    ```
    The application will initialize, embed the `sample.md` file, and drop you into an interactive chat prompt where you can start asking questions!
+
+### 📊 Visualizing the Knowledge Graph
+After you have run `app.py` and the documents are ingested into your knowledge graph, you can generate an interactive visualization.
+
+1. **Run the visualization script**:
+   ```bash
+   python visualize_graph.py
+   ```
+2. **View the graph**:
+   This will generate a file named `graph.html`. Open `graph.html` in any web browser to explore your extracted nodes and edges!
 
 ## 💡 Usage Commands
 Inside the chat interface, you can type the following commands:
